@@ -7,8 +7,10 @@ import { OutputSections } from '@/components/OutputSections';
 import { FileDownloadBar } from '@/components/FileDownloadBar';
 import { APIKeyConfig } from '@/components/APIKeyConfig';
 import { RAGConfig } from '@/components/RAGConfig';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { Mode, RobotConfig, DEFAULT_ROBOT_CONFIG, GeneratedFile, Message } from '@/lib/types';
 import { extractFiles } from '@/lib/modes/full-generation';
+import { Trash2 } from 'lucide-react';
 
 export default function WorkbenchPage() {
   const [mode, setMode] = useState<Mode>('full-generation');
@@ -42,6 +44,8 @@ const [statusMessage, setStatusMessage] = useState('Idle');
 const [sessions, setSessions] = useState<ChatSession[]>([createSession('Session 1')]);
 const [activeSessionId, setActiveSessionId] = useState(() => sessions[0].id);
 const [sessionsLoaded, setSessionsLoaded] = useState(false);
+const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
+const [deleteConfirmSessionId, setDeleteConfirmSessionId] = useState<string | null>(null);
 const activeSession = sessions.find((session) => session.id === activeSessionId) ?? sessions[0];
 const conversationHistory = activeSession?.history ?? [];
 
@@ -89,6 +93,7 @@ const handleRenameSession = (sessionId: string) => {
 };
 
 const handleDeleteSession = (sessionId: string) => {
+  setDeleteConfirmSessionId(null);
   setSessions(prev => {
     if (prev.length <= 1) {
       updateActiveSessionHistory(() => []);
@@ -181,7 +186,7 @@ useEffect(() => {
     const res = await fetch('/api/rag/add-repo', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repoURL, openaiApiKey }),
+      body: JSON.stringify({ repoURL, openaiApiKey: openaiKey }),
     });
 
     if (!res.ok) {
@@ -190,6 +195,18 @@ useEffect(() => {
 
     const result = await res.json();
     console.log('[RAG] Repository added:', result.status);
+  };
+
+  const handleEditMessage = (index: number, content: string) => {
+    // Populate the input with the message content
+    setUserPrompt(content);
+    setEditingMessageIndex(index);
+
+    // Scroll to bottom to show the input
+    setTimeout(() => {
+      const textarea = document.querySelector('textarea');
+      textarea?.focus();
+    }, 100);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -202,7 +219,17 @@ useEffect(() => {
       return;
     }
 
-    const requestHistory = [...conversationHistory, { role: 'user', content: userPrompt }];
+    // Handle editing existing message
+    if (editingMessageIndex !== null) {
+      // Remove messages from the editing point onwards
+      const updatedHistory = conversationHistory.slice(0, editingMessageIndex);
+      updateActiveSessionHistory(() => updatedHistory);
+      setEditingMessageIndex(null);
+    }
+
+    const requestHistory = editingMessageIndex !== null
+      ? [...conversationHistory.slice(0, editingMessageIndex), { role: 'user', content: userPrompt }]
+      : [...conversationHistory, { role: 'user', content: userPrompt }];
 
     if (conversationHistory.length === 0 && userPrompt.trim()) {
       setSessions((prev) =>
@@ -219,16 +246,20 @@ useEffect(() => {
     setGeneratedFiles([]);
     setStatusMessage('Retrieving FTC sources...');
 
+    // Clear input after starting submission
+    const currentPrompt = userPrompt;
+    setUserPrompt('');
+
     // Create abort controller for cancellation
     abortControllerRef.current = new AbortController();
 
-    updateActiveSessionHistory((history) => [...history, { role: 'user', content: userPrompt }]);
+    updateActiveSessionHistory((history) => [...history, { role: 'user', content: currentPrompt }]);
 
     try {
       const requestBody = {
         mode,
         robotConfig,
-        userPrompt,
+        userPrompt: currentPrompt,
         conversationHistory: requestHistory,
         copilotPhase: mode === 'copilot' ? copilotPhase : undefined,
         approvedPlan: mode === 'copilot' && copilotPhase === 'generate' ? approvedPlan : undefined,
@@ -386,14 +417,12 @@ useEffect(() => {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleDeleteSession(session.id);
+                        setDeleteConfirmSessionId(session.id);
                       }}
-                      className="p-1.5 rounded-lg hover:bg-white/10 text-textDim hover:text-text transition-colors"
+                      className="p-1.5 rounded-lg hover:bg-white/10 text-textDim hover:text-red-400 transition-colors"
                       title="Delete session"
                     >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 7h12M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2m2 0v12a2 2 0 01-2 2H8a2 2 0 01-2-2V7h12zM10 11v6M14 11v6" />
-                      </svg>
+                      <Trash2 className="w-4 h-4" />
                     </button>
                   )}
                 </div>
@@ -458,7 +487,12 @@ useEffect(() => {
               </div>
             ) : (
               <div className="max-w-4xl mx-auto space-y-6">
-                <OutputSections content={response} isStreaming={isStreaming} messages={getDisplayHistory()} />
+                <OutputSections
+                  content={response}
+                  isStreaming={isStreaming}
+                  messages={getDisplayHistory()}
+                  onEditMessage={handleEditMessage}
+                />
                 {generatedFiles.length > 0 && (
                   <div className="glass glass-border rounded-2xl">
                     <FileDownloadBar files={generatedFiles} enabled={!isStreaming} />
@@ -568,6 +602,21 @@ useEffect(() => {
             </div>
           </div>
         )}
+
+        <ConfirmDialog
+          isOpen={deleteConfirmSessionId !== null}
+          title="Delete Chat"
+          message="Are you sure you want to delete this chat? This action cannot be undone."
+          confirmText="Delete"
+          cancelText="Cancel"
+          variant="danger"
+          onConfirm={() => {
+            if (deleteConfirmSessionId) {
+              handleDeleteSession(deleteConfirmSessionId);
+            }
+          }}
+          onCancel={() => setDeleteConfirmSessionId(null)}
+        />
       </div>
     </div>
   );

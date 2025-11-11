@@ -1,15 +1,17 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Message } from '@/lib/types';
+import { Pencil, Copy } from 'lucide-react';
 
 interface OutputSectionsProps {
   content: string;
   isStreaming: boolean;
   messages: Message[];
+  onEditMessage?: (index: number, content: string) => void;
 }
 
-export function OutputSections({ content, isStreaming, messages }: OutputSectionsProps) {
+export function OutputSections({ content, isStreaming, messages, onEditMessage }: OutputSectionsProps) {
   const contentRef = useRef<HTMLDivElement>(null);
   const structuredSplit = useMemo(() => splitStructuredContent(content), [content]);
   const sections = useMemo(
@@ -55,7 +57,13 @@ export function OutputSections({ content, isStreaming, messages }: OutputSection
         ) : (
           <div className="space-y-3">
             {formattedMessages.map(({ message, displayContent }, index) => (
-              <ChatMessage key={`${message.role}-${index}`} message={message} content={displayContent} />
+              <ChatMessage
+                key={`${message.role}-${index}`}
+                message={message}
+                content={displayContent}
+                index={index}
+                onEdit={onEditMessage}
+              />
             ))}
           </div>
         )}
@@ -79,17 +87,67 @@ export function OutputSections({ content, isStreaming, messages }: OutputSection
   );
 }
 
-function ChatMessage({ message, content }: { message: Message; content: string }) {
+function ChatMessage({
+  message,
+  content,
+  index,
+  onEdit,
+}: {
+  message: Message;
+  content: string;
+  index: number;
+  onEdit?: (index: number, content: string) => void;
+}) {
+  const [showCopyConfirm, setShowCopyConfirm] = useState(false);
   const isUser = message.role === 'user';
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(message.content);
+    setShowCopyConfirm(true);
+    setTimeout(() => setShowCopyConfirm(false), 2000);
+  };
+
+  const handleEdit = () => {
+    if (onEdit && isUser) {
+      onEdit(index, message.content);
+    }
+  };
+
   return (
     <div
-      className={`glass glass-border rounded-2xl p-4 space-y-2 ${
+      className={`glass glass-border rounded-2xl p-4 space-y-2 relative group ${
         isUser ? 'border-accent/40' : 'border-surfaceHover'
       }`}
     >
-      <p className="text-xs font-medium tracking-wide text-textDim">
-        {isUser ? 'You' : 'Assistant'}
-      </p>
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium tracking-wide text-textDim">
+          {isUser ? 'You' : 'Assistant'}
+        </p>
+        <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+          {!isUser && (
+            <button
+              onClick={handleCopy}
+              className="p-1.5 rounded-lg hover:bg-white/10 text-textDim hover:text-text transition-colors"
+              title="Copy entire response"
+            >
+              {showCopyConfirm ? (
+                <span className="text-xs text-green-400">Copied!</span>
+              ) : (
+                <Copy className="w-4 h-4" />
+              )}
+            </button>
+          )}
+          {isUser && onEdit && (
+            <button
+              onClick={handleEdit}
+              className="p-1.5 rounded-lg hover:bg-white/10 text-textDim hover:text-text transition-colors"
+              title="Edit message"
+            >
+              <Pencil className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      </div>
       <div className="prose prose-invert prose-sm max-w-none">
         <MarkdownContent content={content} />
       </div>
@@ -157,7 +215,7 @@ function Section({ section }: { section: ParsedSection }) {
 function MarkdownContent({ content }: { content: string }) {
   // Parse code blocks
   const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
-  const parts: JSX.Element[] = [];
+  const parts: React.ReactElement[] = [];
   let lastIndex = 0;
   let match;
 

@@ -59,7 +59,8 @@ export async function POST(req: NextRequest) {
     const zipBuffer = await archivePromise;
 
     // Return zip file
-    return new NextResponse(zipBuffer, {
+    const arrayBuffer = zipBuffer.buffer.slice(zipBuffer.byteOffset, zipBuffer.byteOffset + zipBuffer.byteLength) as ArrayBuffer;
+    return new NextResponse(arrayBuffer, {
       headers: {
         'Content-Type': 'application/zip',
         'Content-Disposition': `attachment; filename="ftc-code-${Date.now()}.zip"`,

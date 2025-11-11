@@ -250,7 +250,7 @@ export async function ingestTopTeams(): Promise<FTCDocument[]> {
 
   for (const team of TOP_TEAM_REPOS) {
     try {
-      const docs = await fetchGitHubContent(team.url, team.paths);
+      const docs = await fetchGitHubContent(team.url, [...team.paths]);
 
       docs.forEach(doc => {
         doc.sourcePriority = team.priority;
@@ -324,9 +324,9 @@ export async function ingestAllSources(options: { force?: boolean } = {}): Promi
       let docs: FTCDocument[] = [];
 
       if (source.type === 'github' && 'paths' in source) {
-        docs = await fetchGitHubContent(source.url, source.paths);
+        docs = await fetchGitHubContent(source.url, [...source.paths]);
       } else if (source.type === 'web') {
-        const paths = 'paths' in source ? source.paths : undefined;
+        const paths = 'paths' in source && Array.isArray(source.paths) ? [...source.paths] : undefined;
         docs = await fetchWebContent(source.url, paths);
       } else if (source.type === 'pdf') {
         docs = await fetchPDFContent(source.url);
