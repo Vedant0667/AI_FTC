@@ -16,6 +16,7 @@
 # Misc
 .DS_Store
 *.pem
+.rag-cache/
 
 # Debug
 npm-debug.log*

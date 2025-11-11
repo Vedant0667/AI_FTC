@@ -4,28 +4,31 @@ AI-powered programming assistant specialized for FIRST Tech Challenge teams. Bui
 
 ## Features
 
-- **Three Operating Modes**:
-  - **Full Generation**: Complete, buildable FTC Java files with Gradle dependencies
-  - **Assist**: Targeted code modifications using unified diffs
-  - **Co-Pilot**: Plan-first approach with user confirmation before generation
+- **Three Operating Modes**
+  - **Full Generation** – complete FTC Java files with Gradle snippets
+  - **Assist** – scoped diffs for existing files
+  - **Co-Pilot** – plan approval before code generation
 
-- **FTC-Specific Knowledge**:
-  - RAG integration with FTC SDK, official docs, Road Runner, FTCLib, Dashboard
-  - Season-aware documentation (DECODE 2025-26)
-  - Priority-weighted retrieval (SDK → Official Docs → Community Tools)
+- **Session Workspace**
+  - Persistent sidebar with multiple chat sessions (localStorage)
+  - Rename/delete sessions, quick template prompts, status indicator (Idle/Syncing/etc.)
+  - Floating composer with BYOK API key support (Anthropic/OpenAI) and cancellation
 
-- **Robot Configuration**:
+- **RAG-Driven FTC Knowledge**
+  - Auto-initialized ingest on first load, with `.rag-cache/documents.json`
+  - Vendor-aware weighting (Limelight, PhotonVision, Pedro Pathing, FTCLib, Road Runner)
+  - Manual “Add your team repo” hook (GitHub URL + optional OpenAI key for embeddings)
+
+- **Robot Configuration**
   - Drive type (mecanum/tank/omni)
   - Physical parameters (wheel radius, track width, gear ratio)
-  - IMU orientation
-  - Camera selection
+  - IMU orientation & camera choice
   - Framework toggles (Road Runner, FTCLib, Dashboard, External Vision)
 
-- **Vision Integration**:
-  - Limelight support (external USB processor)
-  - PhotonVision integration
-  - VisionPortal fallback code generation
-  - Dual-system examples
+- **Vision Integration**
+  - Limelight FTC docs + sample repos
+  - PhotonVision + VisionPortal fallbacks
+  - Dual-system examples with telemetry guidance
 
 ## Setup
 
@@ -83,8 +86,10 @@ app/
 components/
   ModeToggle.tsx          # Mode selection UI
   RobotConfigForm.tsx     # Robot configuration form
-  OutputSections.tsx      # Response display (A-D sections)
+  OutputSections.tsx      # Conversation + structured output renderer
   FileDownloadBar.tsx     # Download generated files
+  RAGConfig.tsx           # RAG status, repo ingest form
+  APIKeyConfig.tsx        # Client-side BYOK storage
 
 lib/
   types.ts                # Shared TypeScript types
@@ -116,14 +121,8 @@ styles/
 2. Configure robot parameters (optional, can use defaults)
 3. Enable frameworks (Road Runner, FTCLib, etc.) as needed
 4. Enter your request (e.g., "Create autonomous OpMode with AprilTag navigation")
-5. Submit and wait for generation
-6. Download files as ZIP
-
-**Example Output**:
-- Complete Java OpMode files
-- Gradle dependency additions
-- Test & validation checklist
-- Failure modes & fixes
+5. Submit and monitor the status pill (Retrieving Sources → Generating)
+6. Review conversation + structured output, then download the generated ZIP
 
 ### Assist Mode
 
@@ -144,14 +143,7 @@ styles/
 2. Describe your goal
 3. Review generated implementation plan (3-6 steps)
 4. Click "Approve Plan & Generate Code"
-5. Wait for full code generation
-6. Download files
-
-**Example Output**:
-- Step-by-step plan
-- Complete code (after approval)
-- Test & validation steps
-- Failure modes & fixes
+5. Wait for full code generation and download files
 
 ## RAG Knowledge Base
 
@@ -182,8 +174,14 @@ The system retrieves context from:
    - External vision processor integration
 
 7. **PhotonVision** (Priority 7)
-   - Source: https://docs.photonvision.org
-   - Network-based vision processing
+  - Source: https://docs.photonvision.org
+  - Network-based vision processing
+
+### Caching & Refresh
+
+- Ingest results are cached at `.rag-cache/documents.json` and re-used unless `force` is passed to the init API.
+- The Next.js server auto-runs `/api/rag/init` on first load; a manual trigger button is available in the UI (Settings → RAG).
+- User repository ingestion uses `/api/rag/add-repo` and merges documents into the cache; supplying an OpenAI key enables embeddings for custom repos.
 
 ### Extending the Knowledge Base
 
