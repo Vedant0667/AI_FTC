@@ -7,12 +7,12 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { SYSTEM_PROMPT } from '@/lib/prompt/system';
-import { queryWithRobotContext, formatContextForPrompt } from '@/lib/rag/query';
+import { queryWithRobotContext, formatContextForPrompt, ensureRAGInitialized, getRAGStatus } from '@/lib/rag/query';
 import { buildFullGenerationPrompt } from '@/lib/modes/full-generation';
 import { buildAssistPrompt } from '@/lib/modes/assist';
 import { buildCopilotPlanPrompt, buildCopilotGeneratePrompt } from '@/lib/modes/copilot';
 
-export const runtime = 'edge';
+export const runtime = 'nodejs';
 
 interface RequestBody {
   mode: 'full-generation' | 'assist' | 'copilot';
@@ -47,6 +47,15 @@ export async function POST(req: Request) {
 
     console.log('[API] Received request - Provider:', provider, 'Model:', model);
     console.log('[API] API Key received:', apiKey ? `${apiKey.substring(0, 10)}... (length: ${apiKey.length})` : 'MISSING');
+
+    await ensureRAGInitialized();
+    const ragStatus = getRAGStatus();
+    if (!ragStatus.initialized || ragStatus.documentCount === 0) {
+      return new Response(
+        JSON.stringify({ error: 'RAG sources not ready yet. Please wait for initialization to finish.' }),
+        { status: 503, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
 
     // RAG: Retrieve relevant documentation
     const ragResult = await queryWithRobotContext(userPrompt, robotConfig, 5);

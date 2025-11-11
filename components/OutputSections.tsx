@@ -1,39 +1,73 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
+import { Message } from '@/lib/types';
 
 interface OutputSectionsProps {
   content: string;
   isStreaming: boolean;
+  messages: Message[];
 }
 
-export function OutputSections({ content, isStreaming }: OutputSectionsProps) {
+export function OutputSections({ content, isStreaming, messages }: OutputSectionsProps) {
   const contentRef = useRef<HTMLDivElement>(null);
+  const structuredSplit = useMemo(() => splitStructuredContent(content), [content]);
+  const sections = useMemo(
+    () => parseSections(structuredSplit.structuredText),
+    [structuredSplit.structuredText]
+  );
+  const formattedMessages = useMemo(
+    () =>
+      messages.map(message => {
+        const split = splitStructuredContent(message.content);
+        let displayContent = split.plainText;
+
+        if (!displayContent && split.hasStructured) {
+          displayContent = getPrimarySectionContent(split.structuredText);
+        }
+
+        if (!displayContent) {
+          displayContent = split.hasStructured ? '_Structured details below_' : message.content;
+        }
+
+        return { message, displayContent };
+      }),
+    [messages]
+  );
 
   // Auto-scroll to bottom when new content arrives
   useEffect(() => {
-    if (contentRef.current && isStreaming) {
+    if (contentRef.current) {
       contentRef.current.scrollTop = contentRef.current.scrollHeight;
     }
-  }, [content, isStreaming]);
-
-  // Parse markdown-like sections
-  const sections = parseSections(content);
+  }, [content, isStreaming, messages]);
 
   return (
     <div
       ref={contentRef}
-      className="h-full overflow-y-auto space-y-6 p-6"
+      className="h-full overflow-y-auto space-y-8 p-6"
     >
-      {sections.length === 0 && !isStreaming && (
-        <div className="flex items-center justify-center h-full text-textMuted">
-          Response will appear here
+      <div>
+        {messages.length === 0 ? (
+          <div className="glass glass-border rounded-2xl p-4 text-textMuted text-sm">
+            Ask a question to start the session.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {formattedMessages.map(({ message, displayContent }, index) => (
+              <ChatMessage key={`${message.role}-${index}`} message={message} content={displayContent} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {sections.length > 0 && (
+        <div className="space-y-4">
+          {sections.map((section, index) => (
+            <Section key={index} section={section} />
+          ))}
         </div>
       )}
-
-      {sections.map((section, index) => (
-        <Section key={index} section={section} />
-      ))}
 
       {isStreaming && (
         <div className="flex items-center gap-2 text-accent">
@@ -41,6 +75,24 @@ export function OutputSections({ content, isStreaming }: OutputSectionsProps) {
           <span className="text-sm">Generating...</span>
         </div>
       )}
+    </div>
+  );
+}
+
+function ChatMessage({ message, content }: { message: Message; content: string }) {
+  const isUser = message.role === 'user';
+  return (
+    <div
+      className={`glass glass-border rounded-2xl p-4 space-y-2 ${
+        isUser ? 'border-accent/40' : 'border-surfaceHover'
+      }`}
+    >
+      <p className="text-xs font-medium tracking-wide text-textDim">
+        {isUser ? 'You' : 'Assistant'}
+      </p>
+      <div className="prose prose-invert prose-sm max-w-none">
+        <MarkdownContent content={content} />
+      </div>
     </div>
   );
 }
@@ -54,58 +106,47 @@ interface ParsedSection {
 }
 
 function parseSections(markdown: string): ParsedSection[] {
-  const sections: ParsedSection[] = [];
-
-  // Split by major headers (## A), B), C), D))
-  const headerRegex = /^## ([A-D])\) (.+)$/gm;
-  const parts = markdown.split(headerRegex);
-
-  if (parts[0].trim()) {
-    sections.push({ type: 'text', content: parts[0].trim() });
+  if (!markdown || !markdown.trim()) {
+    return [];
   }
 
-  for (let i = 1; i < parts.length; i += 3) {
-    const letter = parts[i];
-    const title = parts[i + 1];
-    const content = parts[i + 2]?.trim() || '';
+  let working = markdown.trim();
+  working = stripConversationBlocks(working);
 
-    let type: ParsedSection['type'] = 'text';
-    if (letter === 'A') type = 'answer';
-    else if (letter === 'B') type = 'code';
-    else if (letter === 'C') type = 'test';
-    else if (letter === 'D') type = 'failures';
-
-    sections.push({ type, title, content });
+  const firstHeadingIndex = findFirstHeadingIndex(working);
+  if (firstHeadingIndex > 0) {
+    working = working.slice(firstHeadingIndex).trimStart();
   }
 
-  return sections;
+  if (!working) {
+    return [];
+  }
+
+  const letterSections = extractLetteredSections(working);
+  if (letterSections.length > 0) {
+    return letterSections;
+  }
+
+  return extractNamedSections(working);
 }
 
 function Section({ section }: { section: ParsedSection }) {
-  const sectionStyles = {
-    answer: 'border-l-4 border-accent',
-    code: 'border-l-4 border-green-500',
-    test: 'border-l-4 border-yellow-500',
-    failures: 'border-l-4 border-red-500',
+  const decorativeBorders = {
+    answer: 'border-l-2 border-accent/80',
+    code: 'border-l-2 border-green-500/70',
+    test: 'border-l-2 border-yellow-500/70',
+    failures: 'border-l-2 border-red-500/70',
     text: '',
   };
 
-  const sectionLabels = {
-    answer: 'Answer',
-    code: 'Code',
-    test: 'Test & Validation',
-    failures: 'Failure Modes & Fixes',
-    text: '',
-  };
+  const defaultTitles = new Set(['Answer', 'Code', 'Test & Validation', 'Failure Modes & Fixes']);
+  const showTitle = section.title && !defaultTitles.has(section.title);
 
   return (
-    <div className={`bg-surface rounded-lg p-4 ${sectionStyles[section.type]}`}>
-      {section.type !== 'text' && (
-        <h3 className="text-sm font-semibold text-text mb-3 uppercase tracking-wide">
-          {sectionLabels[section.type]}
-        </h3>
+    <div className={`bg-surface rounded-xl p-5 ${decorativeBorders[section.type]}`}>
+      {showTitle && (
+        <p className="text-sm font-semibold text-text mb-3">{section.title}</p>
       )}
-
       <div className="prose prose-invert prose-sm max-w-none">
         <MarkdownContent content={section.content} />
       </div>
@@ -204,4 +245,129 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
       </div>
     </div>
   );
+}
+
+interface StructuredSplitResult {
+  plainText: string;
+  structuredText: string;
+  hasStructured: boolean;
+}
+
+function splitStructuredContent(text: string): StructuredSplitResult {
+  if (!text) {
+    return { plainText: '', structuredText: '', hasStructured: false };
+  }
+
+  const normalized = text.trim();
+  const markerRegex = /(?:^|\n)(CONVERSATION|STRUCTURED OUTPUT|(?:##\s*)?[A-D]\)\s|[A-D]\)\s)/i;
+  const match = markerRegex.exec(normalized);
+
+  if (!match) {
+    return { plainText: normalized, structuredText: '', hasStructured: false };
+  }
+
+  const index = match.index ?? 0;
+  const plainText = normalized.slice(0, index).trimEnd();
+  const structuredText = normalized.slice(index).trimStart();
+
+  return {
+    plainText,
+    structuredText,
+    hasStructured: structuredText.length > 0,
+  };
+}
+
+function extractLetteredSections(markdown: string): ParsedSection[] {
+  const sections: ParsedSection[] = [];
+  const letterRegex = /(?:^|\n)(?:##\s*)?([A-D])\)\s+([^\n]+)\n([\s\S]*?)(?=(?:\n(?:##\s*)?[A-D]\)\s+[^\n]+)|$)/g;
+  let match: RegExpExecArray | null;
+
+  const typeMap: Record<string, ParsedSection['type']> = {
+    A: 'answer',
+    B: 'code',
+    C: 'test',
+    D: 'failures',
+  };
+
+  while ((match = letterRegex.exec(markdown)) !== null) {
+    const letter = match[1];
+    const title = match[2]?.trim();
+    const content = match[3]?.trim() || '';
+    const type = typeMap[letter] ?? 'text';
+    sections.push({ type, title, content });
+  }
+
+  return sections;
+}
+
+function extractNamedSections(markdown: string): ParsedSection[] {
+  const sections: ParsedSection[] = [];
+  const headingRegex =
+    /(?:^|\n)#{0,3}\s*(Answer|Code|Test(?:\s*&|\s*and)?\s*Validation|Test|Failures?|Failure Modes & Fixes)\s*:?\s*\n([\s\S]*?)(?=\n#{0,3}\s*(Answer|Code|Test(?:\s*&|\s*and)?\s*Validation|Test|Failures?|Failure Modes & Fixes)\s*:?\n|$)/gi;
+
+  let match: RegExpExecArray | null;
+  while ((match = headingRegex.exec(markdown)) !== null) {
+    const heading = match[1]?.trim() ?? '';
+    const body = match[2]?.trim() ?? '';
+    const type = mapHeadingToSection(heading);
+    if (!type) continue;
+    sections.push({ type, title: heading, content: body });
+  }
+
+  return sections;
+}
+
+function mapHeadingToSection(heading: string): ParsedSection['type'] | null {
+  const normalized = heading.toLowerCase();
+  if (normalized.startsWith('answer')) return 'answer';
+  if (normalized.startsWith('code')) return 'code';
+  if (normalized.startsWith('test')) return 'test';
+  if (normalized.startsWith('failure')) return 'failures';
+  return null;
+}
+
+function findFirstHeadingIndex(text: string): number {
+  const headingPatterns = [
+    /(^|\n)((?:##\s*)?[A-D]\)\s+)/,
+    /(^|\n)(Answer\b)/i,
+    /(^|\n)(Code\b)/i,
+    /(^|\n)(Test(?:\s*&|\s*and)?\s*Validation\b|Test\b)/i,
+    /(^|\n)(Failures?\b|Failure Modes & Fixes\b)/i,
+  ];
+
+  let earliest = -1;
+
+  for (const pattern of headingPatterns) {
+    const match = pattern.exec(text);
+    if (!match) continue;
+    const headingStart = match.index + (match[1] ? match[1].length : 0);
+    if (earliest === -1 || headingStart < earliest) {
+      earliest = headingStart;
+    }
+  }
+
+  return earliest;
+}
+
+function stripConversationBlocks(text: string): string {
+  let cleaned = text;
+  cleaned = cleaned.replace(
+    /^CONVERSATION[\s\S]*?(?=\n(?:STRUCTURED OUTPUT|(?:##\s*)?[A-D]\)\s|[A-D]\)\s|Answer|Code|Test|Failure))/i,
+    ''
+  );
+  cleaned = cleaned.replace(/^STRUCTURED OUTPUT\s*/i, '');
+  return cleaned.trimStart();
+}
+
+function getPrimarySectionContent(markdown: string): string {
+  const sections = parseSections(markdown);
+  if (!sections.length) return '';
+  const preferredOrder: ParsedSection['type'][] = ['answer', 'code', 'test', 'failures', 'text'];
+  for (const type of preferredOrder) {
+    const section = sections.find(sec => sec.type === type && sec.content.trim());
+    if (section) {
+      return section.content.trim();
+    }
+  }
+  return sections[0]?.content?.trim() ?? '';
 }

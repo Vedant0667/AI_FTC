@@ -10,9 +10,9 @@ export async function POST(req: Request) {
   try {
     const { repoURL, openaiApiKey } = await req.json();
 
-    if (!repoURL || !openaiApiKey) {
+    if (!repoURL) {
       return new Response(
-        JSON.stringify({ error: 'Repository URL and OpenAI API key required' }),
+        JSON.stringify({ error: 'Repository URL required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }

@@ -153,6 +153,19 @@ export const FTC_SOURCES = [
     paths: ['examples/src/main/java/org/firstinspires/ftc/teamcode'],
   },
   {
+    name: 'Limelight FTC Docs',
+    url: 'https://docs.limelightvision.io/docs/docs-limelight/apis/ftc-programming',
+    priority: SourcePriority.LIMELIGHT,
+    type: 'web',
+  },
+  {
+    name: 'Limelight FTC Samples',
+    url: 'https://github.com/Limelight-Robotics/ftc-2026',
+    priority: SourcePriority.LIMELIGHT,
+    type: 'github',
+    paths: ['TeamCode/src/main/java'],
+  },
+  {
     name: 'Game Manual 0 - Best Practices',
     url: 'https://github.com/gamemanual0/gm0',
     priority: SourcePriority.OFFICIAL_DOCS,
@@ -182,3 +195,14 @@ export const CHUNK_OVERLAP = 200; // characters
 // Retrieval configuration
 export const DEFAULT_TOP_K = 10; // Increased from 5 to get more context
 export const RELEVANCE_THRESHOLD = 0.0; // Accept all matches, let priority weighting sort them
+export const SOURCE_WEIGHT = {
+  [SourcePriority.SDK]: 2.0,
+  [SourcePriority.TOP_TEAMS]: 1.9,
+  [SourcePriority.ROADRUNNER]: 1.7,
+  [SourcePriority.FTCLIB]: 1.6,
+  [SourcePriority.LIMELIGHT]: 1.9,
+  [SourcePriority.PHOTONVISION]: 1.8,
+  [SourcePriority.DASHBOARD]: 1.5,
+  [SourcePriority.OFFICIAL_DOCS]: 1.4,
+  [SourcePriority.USER_REPO]: 1.3,
+};

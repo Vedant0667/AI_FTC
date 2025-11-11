@@ -5,13 +5,14 @@
 
 import { FTCDocument, RAGQuery, RAGResult } from '../types';
 import { documentToChunks, ingestAllSources, fetchUserRepo } from './ingest';
-import { DEFAULT_TOP_K, RELEVANCE_THRESHOLD, DocumentChunk } from './types';
+import { DEFAULT_TOP_K, RELEVANCE_THRESHOLD, DocumentChunk, SOURCE_WEIGHT, SourcePriority } from './types';
 import { OpenAIEmbeddings, cosineSimilarity } from './embeddings';
 
 // In-memory stores
 let documentStore: FTCDocument[] = [];
 let chunkStore: DocumentChunk[] = [];
 let isInitialized = false;
+let initPromise: Promise<void> | null = null;
 let embeddings: OpenAIEmbeddings | null = null;
 let useEmbeddings = false;
 
@@ -48,15 +49,9 @@ function bm25Score(query: string, document: string, avgDocLength: number): numbe
 /**
  * Initialize RAG system with optional embeddings
  */
-export async function initializeRAG(openaiApiKey?: string): Promise<void> {
-  if (isInitialized) {
-    console.log('[RAG] Already initialized');
-    return;
-  }
-
+async function runInitialization(openaiApiKey?: string, options: { force?: boolean } = {}) {
   console.log('[RAG] Initializing RAG system...');
 
-  // Try to use embeddings if OpenAI key provided
   if (openaiApiKey) {
     try {
       embeddings = new OpenAIEmbeddings(openaiApiKey);
@@ -64,19 +59,19 @@ export async function initializeRAG(openaiApiKey?: string): Promise<void> {
       console.log('[RAG] Using OpenAI embeddings for semantic search');
     } catch (error) {
       console.warn('[RAG] Failed to initialize embeddings, falling back to BM25:', error);
+      embeddings = null;
       useEmbeddings = false;
     }
   } else {
-    console.log('[RAG] Using BM25 text matching (no embeddings)');
+    embeddings = null;
     useEmbeddings = false;
+    console.log('[RAG] Using BM25 text matching (no embeddings)');
   }
 
-  // Ingest all sources
   console.log('[RAG] Ingesting documents...');
-  const docs = await ingestAllSources();
+  const docs = await ingestAllSources({ force: options.force });
   documentStore = docs;
 
-  // Convert to chunks
   console.log('[RAG] Creating chunks...');
   chunkStore = [];
   for (const doc of docs) {
@@ -84,12 +79,11 @@ export async function initializeRAG(openaiApiKey?: string): Promise<void> {
     chunkStore.push(...chunks);
   }
 
-  // Generate embeddings if enabled
   if (useEmbeddings && embeddings) {
     console.log(`[RAG] Generating embeddings for ${chunkStore.length} chunks...`);
     const texts = chunkStore.map(c => c.content);
-
     const batchSize = 100;
+
     for (let i = 0; i < texts.length; i += batchSize) {
       const batch = texts.slice(i, i + batchSize);
       const batchEmbeddings = await embeddings.embedTexts(batch);
@@ -110,12 +104,64 @@ export async function initializeRAG(openaiApiKey?: string): Promise<void> {
   console.log('[RAG] Initialization complete!');
 }
 
+export async function initializeRAG(openaiApiKey?: string, options: { force?: boolean } = {}): Promise<void> {
+  if (isInitialized && !options.force) {
+    return;
+  }
+
+  if (!initPromise || options.force) {
+    if (options.force) {
+      isInitialized = false;
+      documentStore = [];
+      chunkStore = [];
+    }
+
+    initPromise = runInitialization(openaiApiKey, options)
+      .catch(error => {
+        console.error('[RAG] Initialization failed:', error);
+        isInitialized = false;
+        throw error;
+      })
+      .finally(() => {
+        initPromise = null;
+      });
+  }
+
+  await initPromise;
+}
+
+export function ensureRAGInitialized(): Promise<void> {
+  if (isInitialized) {
+    return Promise.resolve();
+  }
+
+  if (!initPromise) {
+    initPromise = runInitialization()
+      .catch(error => {
+        console.error('[RAG] Auto-initialization failed:', error);
+        isInitialized = false;
+        throw error;
+      })
+      .finally(() => {
+        initPromise = null;
+      });
+  }
+
+  return initPromise;
+}
+
+// Auto-start initialization on module load (BM25 mode)
+ensureRAGInitialized().catch(error => {
+  console.error('[RAG] Background initialization failed:', error);
+});
+
 /**
  * Add user repository to RAG
  */
-export async function addUserRepository(repoURL: string, openaiApiKey: string): Promise<void> {
-  if (!embeddings) {
+export async function addUserRepository(repoURL: string, openaiApiKey?: string): Promise<void> {
+  if (openaiApiKey && (!embeddings || !useEmbeddings)) {
     embeddings = new OpenAIEmbeddings(openaiApiKey);
+    useEmbeddings = true;
   }
 
   console.log('[RAG] Adding user repository...');
@@ -126,11 +172,13 @@ export async function addUserRepository(repoURL: string, openaiApiKey: string): 
   for (const doc of userDocs) {
     const chunks = documentToChunks(doc);
 
-    const texts = chunks.map(c => c.content);
-    const chunkEmbeddings = await embeddings.embedTexts(texts);
+    if (useEmbeddings && embeddings) {
+      const texts = chunks.map(c => c.content);
+      const chunkEmbeddings = await embeddings.embedTexts(texts);
 
-    for (let i = 0; i < chunks.length; i++) {
-      chunks[i].embedding = chunkEmbeddings[i];
+      for (let i = 0; i < chunks.length; i++) {
+        chunks[i].embedding = chunkEmbeddings[i];
+      }
     }
 
     chunkStore.push(...chunks);
@@ -144,8 +192,7 @@ export async function addUserRepository(repoURL: string, openaiApiKey: string): 
  * Lower priority number = higher weight
  */
 function applyPriorityWeighting(score: number, priority: number): number {
-  // SDK (1) gets 2.0x, Top Teams (2) gets 1.8x, etc.
-  const weight = Math.max(2.2 - (priority - 1) * 0.2, 0.5);
+  const weight = SOURCE_WEIGHT[priority as keyof typeof SOURCE_WEIGHT] ?? 1;
   return score * weight;
 }
 
@@ -160,13 +207,70 @@ export async function queryRAG(query: RAGQuery): Promise<RAGResult> {
 
   const topK = query.topK || DEFAULT_TOP_K;
 
+  const vendorHint = /limelight/i.test(query.query)
+    ? SourcePriority.LIMELIGHT
+    : /road ?runner/i.test(query.query)
+    ? SourcePriority.ROADRUNNER
+    : /ftc ?lib/i.test(query.query)
+    ? SourcePriority.FTCLIB
+    : null;
+
+  let chunkPool = chunkStore;
+  if (vendorHint) {
+    const vendorChunks = chunkStore.filter(
+      chunk => chunk.metadata.sourcePriority === vendorHint
+    );
+    if (vendorChunks.length > 0) {
+      chunkPool = vendorChunks;
+    }
+  }
+
+  const tokens = query.query
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(token => token.length > 2);
+
+  const vendorKeywords: Record<number, string[]> = {
+    [SourcePriority.LIMELIGHT]: ['limelight', 'llresult', 'limelight3a', 'detectorresult'],
+    [SourcePriority.ROADRUNNER]: ['roadrunner', 'trajectory', 'driveconstants'],
+    [SourcePriority.FTCLIB]: ['ftclib', 'commandscheduler', 'subsystem'],
+  };
+
+  const keywordWeights = new Map<string, number>();
+  tokens.forEach(token => {
+    keywordWeights.set(token, (keywordWeights.get(token) || 0) + 1);
+  });
+
+  function keywordScore(text: string, priority: number): number {
+    let score = 0;
+    const lower = text.toLowerCase();
+
+    keywordWeights.forEach((weight, token) => {
+      if (token.length < 3) return;
+      const occurrences = lower.split(token).length - 1;
+      if (occurrences > 0) {
+        score += occurrences * (weight + 1);
+      }
+    });
+
+    if (vendorKeywords[priority]) {
+      for (const kw of vendorKeywords[priority]) {
+        if (lower.includes(kw)) {
+          score += 10;
+        }
+      }
+    }
+
+    return score;
+  }
+
   let scoredChunks: Array<{ chunk: DocumentChunk; score: number }> = [];
 
   if (useEmbeddings && embeddings) {
     // Semantic search with embeddings
     const queryEmbedding = await embeddings.embedQuery(query.query);
 
-    scoredChunks = chunkStore
+    scoredChunks = chunkPool
       .filter(chunk => chunk.embedding)
       .map(chunk => {
         let score = cosineSimilarity(queryEmbedding, chunk.embedding!);
@@ -175,10 +279,13 @@ export async function queryRAG(query: RAGQuery): Promise<RAGResult> {
       });
   } else {
     // BM25 text matching
-    const avgDocLength = chunkStore.reduce((sum, c) => sum + c.content.split(/\s+/).length, 0) / chunkStore.length;
+    const avgDocLength = chunkPool.reduce((sum, c) => sum + c.content.split(/\s+/).length, 0) / chunkPool.length;
 
-    scoredChunks = chunkStore.map(chunk => {
-      let score = bm25Score(query.query, chunk.content, avgDocLength);
+    scoredChunks = chunkPool.map(chunk => {
+      let score = keywordScore(chunk.content, chunk.metadata.sourcePriority);
+      if (score === 0) {
+        score = bm25Score(query.query, chunk.content, avgDocLength);
+      }
       score = applyPriorityWeighting(score, chunk.metadata.sourcePriority);
       return { chunk, score };
     });
@@ -205,8 +312,34 @@ export async function queryRAG(query: RAGQuery): Promise<RAGResult> {
     }
   }
 
-  const results = Array.from(docMap.values());
+  let results = Array.from(docMap.values());
   results.sort((a, b) => b.score - a.score);
+
+  if (vendorHint) {
+    results = results.filter(r => r.doc.sourcePriority === vendorHint);
+    if (results.length === 0) {
+      const vendorDocs = chunkStore
+        .filter(chunk => chunk.metadata.sourcePriority === vendorHint)
+        .map(chunk => ({
+          doc: documentStore.find(d => d.id === chunk.documentId)!,
+          score: 1,
+        }))
+        .filter(r => r.doc)
+        .slice(0, topK);
+      results = vendorDocs;
+    }
+  }
+
+  if (results.length > 0) {
+    console.log('[RAG] Top documents:', results.slice(0, 5).map(r => ({
+      title: r.doc.title,
+      source: r.doc.sourceURL,
+      priority: r.doc.sourcePriority,
+      score: r.score.toFixed(3),
+    })));
+  } else {
+    console.warn('[RAG] No documents matched query:', query.query.slice(0, 120));
+  }
 
   return {
     documents: results.map(r => r.doc),
@@ -225,24 +358,28 @@ CRITICAL: You do not have any retrieved documentation for this query.
 You MUST tell the user that you don't have the specific information and cannot generate code without proper documentation.`;
   }
 
+  const MAX_TOTAL_CHARS = 8000;
+  const MAX_PER_DOC = 1500;
+  let used = 0;
   let context = `# Retrieved FTC Source Code and Documentation
 
-IMPORTANT: The following are the ONLY sources you can use. Do not use any knowledge outside of these retrieved documents.
-If the user asks for something not covered here, say you don't have that information.
+IMPORTANT: Use only these sources. If the needed API/class isn’t here, state that explicitly.
 
 `;
 
-  result.documents.forEach((doc, index) => {
-    const relevancePercent = (result.scores[index] * 100).toFixed(1);
-    context += `## Source [${index + 1}] - Relevance: ${relevancePercent}%\n`;
-    context += `File: ${doc.title}\n`;
-    context += `URL: ${doc.sourceURL}\n`;
-    context += `Priority: ${doc.sourcePriority} (1=SDK, 2=TopTeams, 3=RoadRunner, 4=FTCLib, 5=Limelight)\n\n`;
-    context += '```\n';
-    context += doc.content.slice(0, 4000); // Increased to 4000 chars per doc
-    context += '\n```\n\n';
-    context += '---\n\n';
-  });
+  for (let i = 0; i < result.documents.length; i++) {
+    if (used >= MAX_TOTAL_CHARS) break;
+    const doc = result.documents[i];
+    const snippet = doc.content.slice(0, MAX_PER_DOC);
+    const block = `## Source [${i + 1}] - ${doc.title}
+URL: ${doc.sourceURL}
+Priority: ${doc.sourcePriority}
+
+\n\n${snippet}\n\n---\n\n`;
+
+    context += block;
+    used += block.length;
+  }
 
   return context;
 }
@@ -257,6 +394,7 @@ export async function queryWithRobotContext(
 ): Promise<RAGResult> {
   // Build enhanced query with specific technical terms
   const configTerms: string[] = [];
+  const vendorTerms: string[] = [];
   const classNames: string[] = [];
 
   // Extract technical keywords from prompt
@@ -265,6 +403,7 @@ export async function queryWithRobotContext(
   if (promptLower.includes('limelight')) {
     configTerms.push('Limelight3A LLResult DetectorResult getLatestResult');
     classNames.push('com.qualcomm.hardware.limelightvision');
+    vendorTerms.push('limelight limelightvision limelight3a sensorlimelight3a');
   }
 
   if (promptLower.includes('road runner') || promptLower.includes('roadrunner')) {
@@ -295,9 +434,22 @@ export async function queryWithRobotContext(
 
   if (robotConfig.frameworkToggles?.externalVision) {
     configTerms.push('limelight detector neural network');
+    vendorTerms.push('limelight3a limelightvision llresult');
   }
 
-  const enhancedQuery = `${userPrompt} ${configTerms.join(' ')} ${classNames.join(' ')}`;
+  if (/limelight/i.test(userPrompt)) {
+    vendorTerms.push('limelight limelightvision limelight3a limelightresult sensorlimelight3a');
+  }
+
+  if (/road ?runner/i.test(userPrompt)) {
+    vendorTerms.push('road runner DriveConstants SampleMecanumDrive');
+  }
+
+  if (/ftc ?lib/i.test(userPrompt)) {
+    vendorTerms.push('FTCLib CommandScheduler SubsystemBase');
+  }
+
+  const enhancedQuery = `${userPrompt} ${configTerms.join(' ')} ${classNames.join(' ')} ${vendorTerms.join(' ')}`;
 
   return queryRAG({
     query: enhancedQuery,
@@ -311,6 +463,8 @@ export async function queryWithRobotContext(
 export function getRAGStatus() {
   return {
     initialized: isInitialized,
+    initializing: !!initPromise,
+    searchMode: useEmbeddings ? 'semantic' : 'bm25',
     documentCount: documentStore.length,
     chunkCount: chunkStore.length,
     embeddedChunks: chunkStore.filter(c => c.embedding).length,

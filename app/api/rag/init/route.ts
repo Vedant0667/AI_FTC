@@ -13,8 +13,8 @@ export async function POST(req: Request) {
 
     console.log('[API] Initializing RAG system...');
 
-    // OpenAI key is optional - will use BM25 if not provided
-    await initializeRAG(openaiApiKey);
+    // Reinitialize (forces refresh + optional embeddings)
+    await initializeRAG(openaiApiKey, { force: true });
 
     const status = getRAGStatus();
 
